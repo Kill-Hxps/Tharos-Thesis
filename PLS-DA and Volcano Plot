@@ -1,0 +1,167 @@
+##PLS-DA and Volcano Plot Code
+
+#Loads in Excel Data
+library(readxl)
+Horse <- read_excel("C:/Users/Kill/OneDrive - University of Birmingham/Desktop/Metabolomic Data/Domestic NO+/Domestic NO+.xlsx") ##change with each horse
+
+
+
+#Removing first column from data set, assigning Horse as initial column name
+
+library(tidyverse)
+Horse %>% remove_rownames %>% column_to_rownames(var="Horse") -> Data1
+#Removing all zero columns from data frame
+Data1[, colSums(Data1 != 0) > 0] -> Data1
+
+
+
+
+#Normalize Data
+scaled.data1 <- scale(Data1)
+#Check that mean is 0 
+colMeans(scaled.data1)
+#SD is 1
+apply(scaled.data1, 2, sd)
+
+
+
+#Add new column containing 1 (Pre-Treatment) or 2 (Post-Treatment)
+library(dplyr)
+Treatment <- c(1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2) ##change with each horse
+#To prevent data being converted into a list, command means data stays as a data frame
+scaled.data1<-as.data.frame(scaled.data1)
+scaled.data1$Treatment <- Treatment
+#Relocating Column to front of dataframe
+scaled.data1 <- scaled.data1 %>% relocate(Treatment, .before = mz12) ##Change with each horse
+
+
+##PLS-DA 
+
+
+#Installing necessary packages
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+#BiocManager::install("mixOmics")
+#PLS-DA
+library(ggplot2)
+library(MASS)
+library(lattice)
+library(mixOmics)
+
+
+#Creating a Numeric Matrix for PLS-DA analysis
+#Remove Treatment Sample and Save New Name 
+prac_mz <- subset(scaled.data1, select = -c(Treatment))
+prac_mat <- as.matrix(prac_mz)
+#prac_mat
+
+#Combine new matrix and treatment column into a list
+prac_list <- list(Treatment, prac_mat)
+names(prac_list) <- c("treatment", "mzs")
+##PLS ATTEMPT
+data(prac_list)
+X <- prac_list$mzs
+Y <- prac_list$treatment
+
+plsda(X,
+      Y,
+      ncomp = 2,
+      scale = TRUE,
+      tol = 1e-06,
+      max.iter = 100,
+      near.zero.var = FALSE,
+      logratio= "none",  # one of "none", "CLR"
+      multilevel=NULL,
+      all.outputs = TRUE)
+
+
+plsda.practise <- plsda(X, Y, ncomp = 2)
+plotIndiv(plsda.practise, ind.names = TRUE, ellipse = TRUE, legend = TRUE,
+          star = TRUE, title = "Domestic Horse NO+ PLS-DA", X.label = "PLS-DA 1", Y.label = "PLS-DA 2") ##change with each horse
+plotVar(plsda.practise)
+
+##Volcano Plot - Scatter Plots that represent differential expression of features. X-axis = fold change Y - axis = P-Value
+
+
+#Problem with normalized data, LOG cannot perform with normalized data, switched back to regular data
+OGData <- t(Data1)
+#Changes zero values to 0.000001, this is needed for Log2 Fold Change to work
+OGData[OGData == 0] <- 0.000001
+OGData <- apply(OGData, 2, function(x) as.numeric(as.character(x)))
+OGData <- subset(OGData, select=c("BriloNO+(1)", "BrioNO+(1)", "DivaNO+(1)", "PaddyNO+(1)", "RioNO+(1)", "ToryNO+(1)", "BriloNO+(2)", "BrioNO+(2)", "DivaNO+(2)", "PaddyNO+(2)", "RioNO+(2)", "ToryNO+(2)"))
+OGrawpvalue = apply(OGData, 1, ttestH30, grp1 = c(1:6), grp2 = c(7:12)) ##change with each horse
+hist(OGrawpvalue)
+
+#Must Log Un Normalized data frame instead
+LogOGData <- log2(OGData)
+Pre = apply(LogOGData[,1:6], 1, mean) #Change with each horse
+Post = apply(LogOGData[,7:12], 1, mean) # Change with each horse
+class(Pre)
+class(Post)
+
+#The difference between the means is the Log2 Fold Change 
+log2foldchange <- Pre - Post 
+
+#Histogram plot the foldchange
+hist(log2foldchange, xlab = "Log2 Fold Change (Pre vs Post)")
+#We now need to transform the p-value and create a volcano plot using ggplot2
+results = cbind(log2foldchange, OGrawpvalue)
+results = as.data.frame(results)
+results$mzs <- rownames(results)
+library(ggplot2)
+volcano = ggplot(data = results, aes(x = log2foldchange, y = -log10(OGrawpvalue))) + geom_point() + theme_minimal()
+
+#Add vertical lines for log2Fold Change threshold and horizontal lines for p-value threshold
+volcano2 <- volcano + geom_vline(xintercept=c(-0.6, 0.6), col="red") +
+  geom_hline(yintercept=-log10(0.05), col="red")
+
+#Changing row names of OGData to column names from Data1 
+rownames(OGData) <- colnames(Data1)
+rownames(results) <- rownames(OGData)
+
+#Add a column of NAs
+results$diffexpressed <- "NO"
+
+#if Log2Fold Change >0.6 and pvalue < 0.05, set as "UP"
+results$diffexpressed[results$log2foldchange > 0.6 & results$OGrawpvalue < 0.05] <- "UP"
+
+#if Log2Fold Change <0.6 and pvalue < 0.05, set as "Down"
+results$diffexpressed[results$log2foldchange < -0.6 & results$OGrawpvalue < 0.05] <- "DOWN"
+volcano <- ggplot(data=results, aes(x=log2foldchange, y=-log10(OGrawpvalue), col=diffexpressed)) + geom_point() + theme_minimal()
+volcano2 <- volcano + geom_vline(xintercept=c(-0.6, 0.6), col="red") +
+  geom_hline(yintercept=-log10(0.05), col="red")
+
+##Change Point Colour
+volcano3 <- volcano2 + scale_color_manual(values=c("blue","black","red"))
+#Automating point colour changes
+mycolours <- c("blue","black","red")
+names(mycolours) <- c("DOWN", "UP", "NO")
+volcano3 <- volcano2 + scale_color_manual(values = mycolours)
+#Writing the name of metabolites besides the points, and whether they are up or down regulated
+#creating a new column that will contain the names of the differentially expressed metabolites
+results$delabel <- NA
+results$delabel[results$diffexpressed != "NO"] <- results$mzs[results$diffexpressed != "NO"]
+
+ggplot(data=results, aes(x=log2foldchange, y=-log10(OGrawpvalue), col=diffexpressed, label=delabel)) + 
+  geom_point() + 
+  theme_minimal() +
+  geom_text()
+results$mzs <- rownames(OGData)
+
+
+
+#Nicely organizing the volcano plot with the threshold lines too
+library(ggrepel)
+ggplot(data=results, title = "Volcano Plot: Domestic Horse NO+", aes(x=log2foldchange, y=-log10(OGrawpvalue), col=diffexpressed, label=delabel)) +
+  geom_point() + 
+  theme_minimal() +
+  geom_text_repel() +
+  scale_color_manual(values=c("blue", "black", "red")) +
+  geom_vline(xintercept=c(-0.6, 0.6), col="red") +
+  geom_hline(yintercept=-log10(0.05), col="red")
+
+
+write.csv(results, "DHNO+.csv", row.names=FALSE, quote=FALSE) 
+
+
